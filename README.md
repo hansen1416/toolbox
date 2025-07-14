@@ -6,6 +6,8 @@ rclone listremotes
 
 rclone lsf gdrive: --dirs-only
 
+rclone size gdrive:motion-x/video --human-readable
+
 rclone copy ~/datasets/motion-x/video gdrive:motion-x/video --progress --transfers=8 --checkers=16 --tpslimit=10 --drive-chunk-size=64M --log-level=INFO --checksum
 
 ```

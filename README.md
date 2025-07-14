@@ -6,7 +6,7 @@ rclone listremotes
 
 rclone lsf gdrive: --dirs-only
 
-rclone copy ~/datasets/motion-x/video gdrive:motion-x/video --progress --transfers=8 --checkers=16 --tpslimit=10 --drive-chunk-size=64M --log-level=INFO
+rclone copy ~/datasets/motion-x/video gdrive:motion-x/video --progress --transfers=8 --checkers=16 --tpslimit=10 --drive-chunk-size=64M --log-level=INFO --checksum
 
 ```
 from huggingface_hub import HfApi

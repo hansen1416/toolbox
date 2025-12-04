@@ -246,11 +246,13 @@ def should_retry(error: HttpError) -> bool:
     return status in (403, 500, 502, 503, 504)
 
 
-def upload_file(service, file_path, drive_parent_id):
-    """Upload a single file to Google Drive."""
-    file_name = os.path.basename(file_path)
+def upload_file(service, task: UploadTask):
+    """Upload a single file to Google Drive, given an UploadTask."""
+    file_path = task.local_path
+    drive_parent_id = task.parent_drive_id
+    file_name = file_path.name
 
-    # Check if file already exists
+    # Check if file already exists in that folder
     query = f"name='{file_name}' and '{drive_parent_id}' in parents and trashed=false"
     response = (
         service.files()
@@ -259,19 +261,19 @@ def upload_file(service, file_path, drive_parent_id):
     )
     existing_files = response.get("files", [])
 
-    local_size = os.path.getsize(file_path)
+    local_size = file_path.stat().st_size
 
     # Optional: skip if same size (simple deduplication)
     for existing in existing_files:
         if int(existing.get("size", 0)) == local_size:
-            print(f"Skipped (already exists): {file_path}")
+            print(f"Skipped (already exists): {task.rel_path}")
             return existing["id"]
 
-    # Upload
+    # Upload (resumable)
     file_metadata = {"name": file_name, "parents": [drive_parent_id]}
-    media = MediaIoBaseUpload(
-        io.BytesIO(open(file_path, "rb").read()),
-        mimetype="application/octet-stream",
+    media = MediaFileUpload(
+        str(file_path),
+        mimetype=mimetypes.guess_type(file_name)[0] or "application/octet-stream",
         resumable=True,
     )
 
@@ -280,9 +282,9 @@ def upload_file(service, file_path, drive_parent_id):
     while response is None:
         status, response = request.next_chunk()
         if status:
-            print(f"Uploading {file_name}: {int(status.progress() * 100)}%")
+            print(f"Uploading {task.rel_path}: {int(status.progress() * 100)}%")
 
-    print(f"Uploaded: {file_path} (ID: {response.get('id')})")
+    print(f"Uploaded: {task.rel_path} (ID: {response.get('id')})")
     return response.get("id")
 
 

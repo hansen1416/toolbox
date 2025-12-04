@@ -13,12 +13,10 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaFileUpload
 from googleapiclient.errors import HttpError
 
-# If modifying these scopes, delete the file token.json.
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-# Google Drive parent folder ID (optional: set to None to upload to "My Drive" root)
-# To get folder ID: open in browser, ID is in the URL
-DRIVE_PARENT_ID = None  # e.g., '1A2b3C4d5E6f...' or None
+# Optional: set to None to upload to My Drive root; otherwise a folder ID
+DRIVE_PARENT_ID = None
 
 
 @dataclass
@@ -29,28 +27,18 @@ class UploadTask:
     retries: int = 0
 
 
-# Token and credentials files
 def authenticate_google_drive():
-    """Shows basic usage of the Drive v3 API.
-    Prints the names and ids of the first 10 files the user has access to.
-
-    for more detail of this method:
-        https://developers.google.com/workspace/drive/api/quickstart/python?utm_source=chatgpt.com
-    """
+    """Authenticate and return a Drive v3 service client."""
     creds = None
-    # The file token.json stores the user's access and refresh tokens, and is
-    # created automatically when the authorization flow completes for the first
-    # time.
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-    # If there are no (valid) credentials available, let the user log in.
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
             creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
         with open("token.json", "w") as token:
             token.write(creds.to_json())
 
@@ -59,46 +47,28 @@ def authenticate_google_drive():
 
 def list_files_with_cache(folder: str):
     """
-    Maintain two cache files for `folder`:
+    Scan `folder` and maintain two cache files:
 
-    - files_toupload.tmp : files that still need to be uploaded.
+    - files_todo.tmp : files that still need to be uploaded.
     - files_done.tmp : files that have been uploaded successfully.
 
     Behaviour:
-    - If `files_toupload.tmp` exists: do NOT rescan the filesystem; just return it,
-      computing counts from the two cache files.
-    - Otherwise:
-        * Read `files_done.tmp` (if any) to know what is already uploaded.
-        * Walk the folder and compute the current set of files.
-        * toupload := current_files \\ done_files
-        * Overwrite `files_toupload.tmp` with the toupload list.
+    - Read `files_done.tmp` (if any) to know what has already been uploaded.
+    - Walk the folder and compute the current set of files.
+    - `todo` := current_files \ done_files
+    - Overwrite `files_todo.tmp` with the todo list.
 
     Returns:
-        toupload_cache_path, done_cache_path, total_count, toupload_count
+        todo_cache_path, done_cache_path, total_count, todo_count
     """
     folder_path = Path(folder).resolve()
     cache_folder = Path(".", "tmp", folder_path.name)
     cache_folder.mkdir(parents=True, exist_ok=True)
 
-    toupload_cache = cache_folder / "files_toupload.tmp"
+    todo_cache = cache_folder / "files_todo.tmp"
     done_cache = cache_folder / "files_done.tmp"
 
-    # --- Fast path: reuse existing toupload cache without touching the filesystem ---
-    if toupload_cache.exists():
-        # Count how many remain to upload
-        with toupload_cache.open("r", encoding="utf-8") as f:
-            toupload_count = sum(1 for _ in f)
-
-        # Best-effort estimate of total = done + toupload (purely from caches)
-        done_count = 0
-        if done_cache.exists():
-            with done_cache.open("r", encoding="utf-8") as f:
-                done_count = sum(1 for _ in f)
-
-        total_count = toupload_count + done_count
-        return toupload_cache, done_cache, total_count, toupload_count
-
-    # --- Slow path: no toupload cache yet, build it from disk and done cache ---
+    # Load already uploaded files (relative POSIX paths)
     done_set = set()
     if done_cache.exists():
         with done_cache.open("r", encoding="utf-8") as f:
@@ -107,6 +77,7 @@ def list_files_with_cache(folder: str):
                 if rel:
                     done_set.add(rel)
 
+    # Scan current filesystem
     current_files = []
     total_count = 0
     for root, _, files in os.walk(folder_path):
@@ -116,19 +87,23 @@ def list_files_with_cache(folder: str):
             current_files.append(rel)
             total_count += 1
 
-    # toupload = current_files - already done
-    toupload_files = [rel for rel in current_files if rel not in done_set]
+    # Compute todo = current_files - done_files
+    todo_files = [rel for rel in current_files if rel not in done_set]
 
-    with toupload_cache.open("w", encoding="utf-8") as f:
-        for rel in toupload_files:
+    # Overwrite todo cache
+    with todo_cache.open("w", encoding="utf-8") as f:
+        for rel in todo_files:
             f.write(rel + "\n")
 
-    return toupload_cache, done_cache, total_count, len(toupload_files)
+    return todo_cache, done_cache, total_count, len(todo_files)
 
 
 def get_or_create_folder(service, folder_name, parent_id=None):
-    """Search for folder by name under parent, create if not exists."""
-    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    """Search for folder by name under parent, create if it does not exist."""
+    query = (
+        f"name='{folder_name}' and "
+        "mimeType='application/vnd.google-apps.folder' and trashed=false"
+    )
     if parent_id:
         query += f" and '{parent_id}' in parents"
 
@@ -141,17 +116,17 @@ def get_or_create_folder(service, folder_name, parent_id=None):
 
     if folders:
         return folders[0]["id"]
-    else:
-        file_metadata = {
-            "name": folder_name,
-            "mimeType": "application/vnd.google-apps.folder",
-        }
-        if parent_id:
-            file_metadata["parents"] = [parent_id]
 
-        folder = service.files().create(body=file_metadata, fields="id").execute()
-        print(f"Created folder: {folder_name} (ID: {folder.get('id')})")
-        return folder.get("id")
+    file_metadata = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    if parent_id:
+        file_metadata["parents"] = [parent_id]
+
+    folder = service.files().create(body=file_metadata, fields="id").execute()
+    print(f"Created folder: {folder_name} (ID: {folder.get('id')})")
+    return folder.get("id")
 
 
 def ensure_folder_for_relative_path(
@@ -193,23 +168,22 @@ def ensure_folder_for_relative_path(
     return parent_id
 
 
-def build_tasks_from_cache(local_root: str, root_drive_id: str):
+def build_tasks_from_cache(local_root: str, root_drive_id: str, todo_cache: Path):
     """
-    Read file_list.tmp for `local_root` and build upload tasks that
-    preserve the relative folder structure under `root_drive_id`.
+    Read `todo_cache` and build upload tasks that preserve the relative
+    folder structure under `root_drive_id`.
     """
     local_root_path = Path(local_root).resolve()
-    cache_file = Path(".", "tmp", local_root_path.name) / "file_list.tmp"
-    if not cache_file.exists():
-        raise FileNotFoundError(f"Cache file not found: {cache_file}")
+    if not todo_cache.exists():
+        raise FileNotFoundError(f"Todo cache file not found: {todo_cache}")
+
+    service = authenticate_google_drive()
 
     tasks = deque()
     folder_cache = {}  # rel_folder_str -> drive_folder_id
     folder_cache[""] = root_drive_id
 
-    service = authenticate_google_drive()
-
-    with cache_file.open("r", encoding="utf-8") as f:
+    with todo_cache.open("r", encoding="utf-8") as f:
         for line in f:
             rel_str = line.strip()
             if not rel_str:
@@ -232,6 +206,7 @@ def build_tasks_from_cache(local_root: str, root_drive_id: str):
                     parent_drive_id=drive_parent_id,
                 )
             )
+
     return service, tasks
 
 
@@ -243,11 +218,13 @@ def should_retry(error: HttpError) -> bool:
     return status in (403, 500, 502, 503, 504)
 
 
-def upload_file(service, file_path, drive_parent_id):
-    """Upload a single file to Google Drive."""
-    file_name = os.path.basename(file_path)
+def upload_file(service, task: UploadTask):
+    """Upload a single file to Google Drive, given an UploadTask."""
+    file_path = task.local_path
+    drive_parent_id = task.parent_drive_id
+    file_name = file_path.name
 
-    # Check if file already exists
+    # Check if file already exists in that folder
     query = f"name='{file_name}' and '{drive_parent_id}' in parents and trashed=false"
     response = (
         service.files()
@@ -256,19 +233,19 @@ def upload_file(service, file_path, drive_parent_id):
     )
     existing_files = response.get("files", [])
 
-    local_size = os.path.getsize(file_path)
+    local_size = file_path.stat().st_size
 
     # Optional: skip if same size (simple deduplication)
     for existing in existing_files:
         if int(existing.get("size", 0)) == local_size:
-            print(f"Skipped (already exists): {file_path}")
+            print(f"Skipped (already exists): {task.rel_path}")
             return existing["id"]
 
-    # Upload
+    # Upload (resumable)
     file_metadata = {"name": file_name, "parents": [drive_parent_id]}
-    media = MediaIoBaseUpload(
-        io.BytesIO(open(file_path, "rb").read()),
-        mimetype="application/octet-stream",
+    media = MediaFileUpload(
+        str(file_path),
+        mimetype=mimetypes.guess_type(file_name)[0] or "application/octet-stream",
         resumable=True,
     )
 
@@ -277,20 +254,30 @@ def upload_file(service, file_path, drive_parent_id):
     while response is None:
         status, response = request.next_chunk()
         if status:
-            print(f"Uploading {file_name}: {int(status.progress() * 100)}%")
+            print(f"Uploading {task.rel_path}: {int(status.progress() * 100)}%")
 
-    print(f"Uploaded: {file_path} (ID: {response.get('id')})")
+    print(f"Uploaded: {task.rel_path} (ID: {response.get('id')})")
     return response.get("id")
 
 
-def process_queue(service, tasks: deque, max_retries: int = 5, base_delay: float = 1.0):
+def process_queue(
+    service,
+    tasks: deque,
+    done_cache: Path,
+    max_retries: int = 5,
+    base_delay: float = 1.0,
+):
     """
     Process the upload task queue with exponential backoff retries.
+    On successful upload, append the file to `done_cache`.
     """
     while tasks:
         task = tasks.popleft()
         try:
             upload_file(service, task)
+            # Mark as done (store relative path in POSIX form)
+            with done_cache.open("a", encoding="utf-8") as f:
+                f.write(task.rel_path.as_posix() + "\n")
         except HttpError as e:
             task.retries += 1
             if task.retries <= max_retries and should_retry(e):
@@ -330,18 +317,13 @@ if __name__ == "__main__":
 
     assert args.local, "Please provide a local folder to upload"
 
-    toupload_cache, done_cache, total_count, toupload_count = list_files_with_cache(
-        args.local
-    )
+    todo_cache, done_cache, total_count, todo_count = list_files_with_cache(args.local)
     print(f"Total number of files on disk: {total_count}")
-    print(f"Files remaining to upload: {toupload_count}")
-    print(f"toupload cache: {toupload_cache}")
+    print(f"Files remaining to upload: {todo_count}")
+    print(f"Todo cache: {todo_cache}")
     print(f"Done cache: {done_cache}")
 
-    # service, tasks = build_tasks_from_cache(args.local, args.driver_id)
-    # print(f"Built {len(tasks)} upload tasks; starting upload...")
+    service, tasks = build_tasks_from_cache(args.local, args.driver_id, todo_cache)
+    print(f"Built {len(tasks)} upload tasks; starting upload...")
 
-    # print(service)
-    # print(len(tasks))
-
-    # process_queue(service, tasks)
+    process_queue(service, tasks, done_cache)

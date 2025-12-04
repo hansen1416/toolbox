@@ -196,23 +196,22 @@ def ensure_folder_for_relative_path(
     return parent_id
 
 
-def build_tasks_from_cache(local_root: str, root_drive_id: str):
+def build_tasks_from_cache(local_root: str, root_drive_id: str, toupload_cache: Path):
     """
-    Read file_list.tmp for `local_root` and build upload tasks that
-    preserve the relative folder structure under `root_drive_id`.
+    Read `toupload_cache` and build upload tasks that preserve the relative
+    folder structure under `root_drive_id`.
     """
     local_root_path = Path(local_root).resolve()
-    cache_file = Path(".", "tmp", local_root_path.name) / "file_list.tmp"
-    if not cache_file.exists():
-        raise FileNotFoundError(f"Cache file not found: {cache_file}")
+    if not toupload_cache.exists():
+        raise FileNotFoundError(f"Todo cache file not found: {toupload_cache}")
+
+    service = authenticate_google_drive()
 
     tasks = deque()
     folder_cache = {}  # rel_folder_str -> drive_folder_id
     folder_cache[""] = root_drive_id
 
-    service = authenticate_google_drive()
-
-    with cache_file.open("r", encoding="utf-8") as f:
+    with toupload_cache.open("r", encoding="utf-8") as f:
         for line in f:
             rel_str = line.strip()
             if not rel_str:
@@ -235,6 +234,7 @@ def build_tasks_from_cache(local_root: str, root_drive_id: str):
                     parent_drive_id=drive_parent_id,
                 )
             )
+
     return service, tasks
 
 

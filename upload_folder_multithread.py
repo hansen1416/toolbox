@@ -288,14 +288,24 @@ def upload_file(service, task: UploadTask):
     return response.get("id")
 
 
-def process_queue(service, tasks: deque, max_retries: int = 5, base_delay: float = 1.0):
+def process_queue(
+    service,
+    tasks: deque,
+    done_cache: Path,
+    max_retries: int = 5,
+    base_delay: float = 1.0,
+):
     """
     Process the upload task queue with exponential backoff retries.
+    On successful upload, append the file to `done_cache`.
     """
     while tasks:
         task = tasks.popleft()
         try:
             upload_file(service, task)
+            # Mark as done (store relative path in POSIX form)
+            with done_cache.open("a", encoding="utf-8") as f:
+                f.write(task.rel_path.as_posix() + "\n")
         except HttpError as e:
             task.retries += 1
             if task.retries <= max_retries and should_retry(e):
@@ -343,10 +353,7 @@ if __name__ == "__main__":
     print(f"toupload cache: {toupload_cache}")
     print(f"Done cache: {done_cache}")
 
-    # service, tasks = build_tasks_from_cache(args.local, args.driver_id)
-    # print(f"Built {len(tasks)} upload tasks; starting upload...")
+    service, tasks = build_tasks_from_cache(args.local, args.driver_id, toupload_cache)
+    print(f"Built {len(tasks)} upload tasks; starting upload...")
 
-    # print(service)
-    # print(len(tasks))
-
-    # process_queue(service, tasks)
+    process_queue(service, tasks, done_cache)

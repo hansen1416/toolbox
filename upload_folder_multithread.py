@@ -127,8 +127,11 @@ def list_files_with_cache(folder: str):
 
 
 def get_or_create_folder(service, folder_name, parent_id=None):
-    """Search for folder by name under parent, create if not exists."""
-    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    """Search for folder by name under parent, create if it does not exist."""
+    query = (
+        f"name='{folder_name}' and "
+        "mimeType='application/vnd.google-apps.folder' and trashed=false"
+    )
     if parent_id:
         query += f" and '{parent_id}' in parents"
 
@@ -141,17 +144,17 @@ def get_or_create_folder(service, folder_name, parent_id=None):
 
     if folders:
         return folders[0]["id"]
-    else:
-        file_metadata = {
-            "name": folder_name,
-            "mimeType": "application/vnd.google-apps.folder",
-        }
-        if parent_id:
-            file_metadata["parents"] = [parent_id]
 
-        folder = service.files().create(body=file_metadata, fields="id").execute()
-        print(f"Created folder: {folder_name} (ID: {folder.get('id')})")
-        return folder.get("id")
+    file_metadata = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    if parent_id:
+        file_metadata["parents"] = [parent_id]
+
+    folder = service.files().create(body=file_metadata, fields="id").execute()
+    print(f"Created folder: {folder_name} (ID: {folder.get('id')})")
+    return folder.get("id")
 
 
 def ensure_folder_for_relative_path(
